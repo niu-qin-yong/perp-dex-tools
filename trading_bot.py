@@ -426,7 +426,8 @@ class TradingBot:
 
             if self.config.direction == "buy":
                 new_order_close_price = best_ask * (1 + self.config.take_profit/100)
-                if next_close_price / new_order_close_price > 1 + self.config.grid_step/100:
+                if new_order_close_price < next_close_price * (1 - self.config.grid_step/100):
+                # if next_close_price / new_order_close_price > 1 + self.config.grid_step/100:
                     return True
                 else:
                     return False
