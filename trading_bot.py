@@ -453,20 +453,36 @@ class TradingBot:
         if best_bid <= 0 or best_ask <= 0 or best_bid >= best_ask:
             raise ValueError("No bid/ask data available")
 
+        # if self.config.stop_price != -1:
+        #     if self.config.direction == "buy":
+        #         if best_ask >= self.config.stop_price:
+        #             stop_trading = True
+        #     elif self.config.direction == "sell":
+        #         if best_bid <= self.config.stop_price:
+        #             stop_trading = True
+
+        # if self.config.pause_price != -1:
+        #     if self.config.direction == "buy":
+        #         if best_ask >= self.config.pause_price:
+        #             pause_trading = True
+        #     elif self.config.direction == "sell":
+        #         if best_bid <= self.config.pause_price:
+        #             pause_trading = True
+
         if self.config.stop_price != -1:
             if self.config.direction == "buy":
-                if best_ask >= self.config.stop_price:
+                if best_ask <= self.config.stop_price:
                     stop_trading = True
             elif self.config.direction == "sell":
-                if best_bid <= self.config.stop_price:
+                if best_bid >= self.config.stop_price:
                     stop_trading = True
 
         if self.config.pause_price != -1:
             if self.config.direction == "buy":
-                if best_ask >= self.config.pause_price:
+                if best_ask <= self.config.pause_price:
                     pause_trading = True
             elif self.config.direction == "sell":
-                if best_bid <= self.config.pause_price:
+                if best_bid >= self.config.pause_price:
                     pause_trading = True
 
         return stop_trading, pause_trading
