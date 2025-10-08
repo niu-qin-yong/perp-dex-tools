@@ -19,6 +19,8 @@ from bpx.constants.enums import OrderTypeEnum, TimeInForceEnum
 from .base import BaseExchangeClient, OrderResult, OrderInfo, query_retry
 from helpers.logger import TradingLogger
 
+from helpers import decrypt_pwd
+
 
 class BackpackWebSocketManager:
     """WebSocket manager for Backpack order updates."""
@@ -157,8 +159,18 @@ class BackpackClient(BaseExchangeClient):
         super().__init__(config)
 
         # Backpack credentials from environment
-        self.public_key = os.getenv('BACKPACK_PUBLIC_KEY')
-        self.secret_key = os.getenv('BACKPACK_SECRET_KEY')
+        # get the encrypted key and salt
+        BACKPACK_PUBLIC_KEY = os.getenv('BACKPACK_PUBLIC_KEY')
+        salt_b64_public_key = os.getenv('SALT_BACKPACK_PUBLIC_KEY')
+        self.public_key = decrypt_pwd.decrypt_private_key(BACKPACK_PUBLIC_KEY,
+                                        self.config.password,
+                                        base64.b64decode(salt_b64_public_key))
+        
+        BACKPACK_SECRET_KEY = os.getenv('BACKPACK_SECRET_KEY')
+        salt_b64_secret_key = os.getenv('SALT_BACKPACK_SECRET_KEY')
+        self.secret_key = decrypt_pwd.decrypt_private_key(BACKPACK_SECRET_KEY,
+                                        self.config.password,
+                                        base64.b64decode(salt_b64_secret_key))
 
         if not self.public_key or not self.secret_key:
             raise ValueError("BACKPACK_PUBLIC_KEY and BACKPACK_SECRET_KEY must be set in environment variables")

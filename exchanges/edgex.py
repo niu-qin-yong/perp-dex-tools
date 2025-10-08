@@ -12,6 +12,8 @@ from edgex_sdk import Client, OrderSide, WebSocketManager, CancelOrderParams, Ge
 
 from .base import BaseExchangeClient, OrderResult, OrderInfo, query_retry
 from helpers.logger import TradingLogger
+from helpers import decrypt_pwd
+import base64
 
 
 class EdgeXClient(BaseExchangeClient):
@@ -22,8 +24,18 @@ class EdgeXClient(BaseExchangeClient):
         super().__init__(config)
 
         # EdgeX credentials from environment
-        self.account_id = os.getenv('EDGEX_ACCOUNT_ID')
-        self.stark_private_key = os.getenv('EDGEX_STARK_PRIVATE_KEY')
+        EDGEX_ACCOUNT_ID = os.getenv('EDGEX_ACCOUNT_ID')
+        salt_b64_id = os.getenv('SALT_EDGEX_ACCOUNT_ID')
+        self.account_id = decrypt_pwd.decrypt_private_key(EDGEX_ACCOUNT_ID,
+                                        self.config.password,
+                                        base64.b64decode(salt_b64_id))
+        
+        EDGEX_STARK_PRIVATE_KEY = os.getenv('EDGEX_STARK_PRIVATE_KEY')
+        salt_b64_secret_key = os.getenv('SALT_EDGEX_STARK_PRIVATE_KEY')
+        self.stark_private_key = decrypt_pwd.decrypt_private_key(EDGEX_STARK_PRIVATE_KEY,
+                                        self.config.password,
+                                        base64.b64decode(salt_b64_secret_key))
+
         self.base_url = os.getenv('EDGEX_BASE_URL', 'https://pro.edgex.exchange')
         self.ws_url = os.getenv('EDGEX_WS_URL', 'wss://quote.edgex.exchange')
 
