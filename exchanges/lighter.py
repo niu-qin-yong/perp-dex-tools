@@ -19,6 +19,9 @@ from lighter import SignerClient, ApiClient, Configuration
 # Import custom WebSocket implementation
 from .lighter_custom_websocket import LighterCustomWebSocketManager
 
+from helpers import decrypt_pwd
+import base64
+
 # Suppress Lighter SDK debug logs
 logging.getLogger('lighter').setLevel(logging.WARNING)
 # Also suppress root logger DEBUG messages that might be coming from Lighter SDK
@@ -35,7 +38,13 @@ class LighterClient(BaseExchangeClient):
         super().__init__(config)
 
         # Lighter credentials from environment
-        self.api_key_private_key = os.getenv('API_KEY_PRIVATE_KEY')
+        # self.api_key_private_key = os.getenv('API_KEY_PRIVATE_KEY')
+        API_KEY_PRIVATE_KEY = os.getenv('API_KEY_PRIVATE_KEY')
+        salt_b64_key = os.getenv('SALT_API_KEY_PRIVATE_KEY')
+        self.api_key_private_key = decrypt_pwd.decrypt_private_key(API_KEY_PRIVATE_KEY,
+                                        self.config.password,
+                                        base64.b64decode(salt_b64_key))
+
         self.account_index = int(os.getenv('LIGHTER_ACCOUNT_INDEX', '0'))
         self.api_key_index = int(os.getenv('LIGHTER_API_KEY_INDEX', '0'))
         self.base_url = "https://mainnet.zklighter.elliot.ai"
