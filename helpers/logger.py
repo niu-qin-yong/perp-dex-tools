@@ -110,3 +110,20 @@ class TradingLogger:
 
         except Exception as e:
             self.log(f"Failed to log transaction: {e}", "ERROR")
+
+    def log_transaction_rate(self, open_side: str, open_price: Decimal,close_side: str, close_price: Decimal,rate: Decimal):
+        try:
+            timestamp = datetime.now(self.timezone).strftime("%Y-%m-%d %H:%M:%S")
+            row = [timestamp, open_side, open_price, close_side, close_price, rate]
+
+            # Check if file exists to write headers
+            file_exists = os.path.isfile(self.log_file)
+
+            with open(self.log_file, 'a', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                if not file_exists:
+                    writer.writerow(['Timestamp', 'OrderID', 'Side', 'Quantity', 'Price', 'Status'])
+                writer.writerow(row)
+        except Exception as e:
+            self.log(f"Failed to log transaction rate: {e}", "ERROR")
+

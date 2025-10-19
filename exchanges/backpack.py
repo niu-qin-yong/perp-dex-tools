@@ -20,6 +20,8 @@ from .base import BaseExchangeClient, OrderResult, OrderInfo, query_retry
 from helpers.logger import TradingLogger
 
 from helpers import decrypt_pwd
+import ssl
+import certifi
 
 
 class BackpackWebSocketManager:
@@ -56,7 +58,8 @@ class BackpackWebSocketManager:
         while True:
             try:
                 self.logger.log("Connecting to Backpack WebSocket", "INFO")
-                self.websocket = await websockets.connect(self.ws_url)
+                ssl_context = ssl.create_default_context(cafile=certifi.where())
+                self.websocket = await websockets.connect(self.ws_url,ssl=ssl_context)
                 self.running = True
 
                 # Subscribe to order updates for the specific symbol
@@ -504,6 +507,8 @@ class BackpackClient(BaseExchangeClient):
                 self.logger.log(
                     f"[CLOSE] Failed to cancel order {order_id}: {cancel_result.get('message', 'Unknown error')}", "ERROR")
                 filled_size = self.config.quantity
+                if cancel_result.get('message') == "Order not found":
+                    return OrderResult(success=False, error_message='Order not found', filled_size=filled_size)
             else:
                 filled_size = Decimal(cancel_result.get('executedQuantity', 0))
             return OrderResult(success=True, filled_size=filled_size)
