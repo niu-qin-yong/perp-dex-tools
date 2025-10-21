@@ -248,38 +248,43 @@ class MyStrategyBot:
         # record the close order filled price
         self.current_order_close_price = Decimal(close_order_filled_price)
 
+        # record trade data
+        if self.config.direction == 'buy':
+            rate = (self.current_order_close_price/self.current_order_open_price-1).quantize(Decimal('0.0000'), rounding=ROUND_HALF_UP)
+        else:
+            rate = -1*(self.current_order_close_price/self.current_order_open_price-1).quantize(Decimal('0.0000'), rounding=ROUND_HALF_UP)
+        self.logger.log_transaction_rate(
+            self.config.direction
+            ,self.current_order_open_price
+            ,self.config.close_order_side
+            ,self.current_order_close_price
+            ,rate)
+
         try:
-            # record the order history score
-            if self._order_profitable():
-                if self.config.direction == "buy":
-                    direction_score = 1
-                else:
-                    direction_score = -1
-            else:
-                if self.config.direction == "buy":
-                    direction_score = -1
-                else:
-                    direction_score = 1
-            self.order_history.append(direction_score)
+            # # record the order history score
+            # if self._order_profitable():
+            #     if self.config.direction == "buy":
+            #         direction_score = 1
+            #     else:
+            #         direction_score = -1
+            # else:
+            #     if self.config.direction == "buy":
+            #         direction_score = -1
+            #     else:
+            #         direction_score = 1
+            # self.order_history.append(direction_score)
+            # # generate next direction
+            # score = 0
+            # for item in self.order_history:
+            #     score += item
+            # self.config.direction = 'buy' if score >= 0 else 'sell'
 
-            # record trade data
-            if self.config.direction == 'buy':
-                rate = (self.current_order_close_price/self.current_order_open_price-1).quantize(Decimal('0.0000'), rounding=ROUND_HALF_UP)
-            else:
-                rate = -1*(self.current_order_close_price/self.current_order_open_price-1).quantize(Decimal('0.0000'), rounding=ROUND_HALF_UP)
-            self.logger.log_transaction_rate(
-                self.config.direction
-                ,self.current_order_open_price
-                ,self.config.close_order_side
-                ,self.current_order_close_price
-                ,rate)
+            # if the direction is profitable, then keep it, or change it
+            if not self._order_profitable():
+                self.config.direction = self.config.close_order_side
 
-            # generate next direction
-            score = 0
-            for item in self.order_history:
-                score += item
-            self.config.direction = 'buy' if score >= 0 else 'sell'
             self.logger.log(f'Gen_Next_Direction: {self.config.direction}','INFO')
+
         except Exception as e:
             self.logger.log(f"Gen_Next_Direction error: {e}","ERROR")
             raise Exception(f"Gen_Next_Direction error: {e}")
