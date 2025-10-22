@@ -309,7 +309,8 @@ class MyStrategyBot:
             current_order_status = order_info.status
 
         # the close order still active waiting to be filled
-        if current_order_status == "New":
+        # the status is "New" when the exchange is backpack, "OPEN" when edgex
+        if current_order_status == "New" or current_order_status == "OPEN":
             return True
         else:
             # the close order has been filled
@@ -360,17 +361,29 @@ class MyStrategyBot:
             close_price = open_filled_price * (1 - self.config.take_profit/100)
         
         # Place close order
-        close_order_result = await self.exchange_client.place_close_order(
-            self.config.contract_id,
-            open_filled_quantity,
-            close_price,
-            close_side
-        )
-        if self.config.exchange == "lighter":
-            await asyncio.sleep(1)
+        retry_count = 0
+        while retry_count < 5:
+            close_order_result = await self.exchange_client.place_close_order(
+                self.config.contract_id,
+                open_filled_quantity,
+                close_price,
+                close_side
+            )
+            if self.config.exchange == "lighter":
+                await asyncio.sleep(1)
+
+            if self.config.exchange == "edgex" and close_order_result.status == "PENDING":
+                await asyncio.sleep(3)
+
+            if not close_order_result.success:
+                self.logger.log(f"[CLOSE] retry {retry_count} Failed to place close order: {close_order_result.error_message}", "ERROR")
+                retry_count += 1
+                continue
+
+            # make be out of current while loop
+            retry_count = 5
 
         if not close_order_result.success:
-            self.logger.log(f"[CLOSE] Failed to place close order: {close_order_result.error_message}", "ERROR")
             raise Exception(f"[CLOSE] Failed to place close order: {close_order_result.error_message}")
 
         self.logger.log(f"[CLOSE]: 止盈maker挂单 {close_order_result.side} {close_order_result.order_id} {close_order_result.size} @ {close_order_result.price} ", "INFO")
@@ -427,7 +440,7 @@ class MyStrategyBot:
                 # cancel order first, 'close_order_result' is previous take profit order in the first time, then the stop loss order 
                 cancelled = await self._cancel_order(close_order_result)
                 if not cancelled:
-                    self.logger.log(f"[CLOSE] {close_order_result.order_id} may have been filled {close_order_result.side} {close_order_result.size} @ {close_order_result.price}")
+                    self.logger.log(f"[CLOSE] cancel failed, {close_order_result.order_id} may have been filled {close_order_result.side} {close_order_result.size} @ {close_order_result.price}")
                     break
                 
                 # Get positions
@@ -439,6 +452,9 @@ class MyStrategyBot:
                 #     self.close_order_filled_event.set()
                 #     break
 
+                if self.config.quantity-self.order_filled_amount <= 0:
+                    self.logger.log(f"[CLOSE] the quantity is negative, {close_order_result.order_id} may have been filled {close_order_result.side} {close_order_result.size} @ {close_order_result.price}")
+                    break
 
                 # reset Event state
                 self.close_order_filled_event.clear()
@@ -454,11 +470,11 @@ class MyStrategyBot:
                 if self.config.exchange == "lighter":
                     await asyncio.sleep(1)
 
-                self.logger.log(f"[CLOSE] 盘口价平仓maker挂单 Retry {self.retry_times} {close_order_result.order_id} {close_order_result.side} {close_order_result.size} @ {close_order_result.price}")
-
                 if not close_order_result.success:
                     self.logger.log(f"[CLOSE] Failed to place close order:{close_order_result.order_id}, {close_order_result.error_message}", "ERROR")
                     raise Exception(f"[CLOSE] Failed to place close order:{close_order_result.order_id},  {close_order_result.error_message}")
+             
+                self.logger.log(f"[CLOSE] 盘口价平仓maker挂单 Retry {self.retry_times} {close_order_result.order_id} {close_order_result.side} {close_order_result.size} @ {close_order_result.price}")
 
                 # wait maker order to be filled
                 await asyncio.sleep(5)
@@ -543,15 +559,15 @@ class MyStrategyBot:
                         self.order_filled_amount += cancel_result.filled_size
                     else:
                         # Wait for cancel event or timeout
-                        if not self.order_canceled_event.is_set():
-                            try:
-                                await asyncio.wait_for(self.order_canceled_event.wait(), timeout=5)
-                            except asyncio.TimeoutError:
-                                self.logger.log(f"[CLOSE] canceling order TimeoutError {order.order_id}", "WARNING")
-                                raise Exception(f"[CLOSE] cancelling order TimeoutError: {order.order_id}")
+                        # if not self.order_canceled_event.is_set():
+                        #     try:
+                        #         await asyncio.wait_for(self.order_canceled_event.wait(), timeout=5)
+                        #     except asyncio.TimeoutError:
+                        #         self.logger.log(f"[CLOSE] canceling order TimeoutError {order.order_id}", "WARNING")
+                        #         raise Exception(f"[CLOSE] cancelling order TimeoutError: {order.order_id}")
                         order_info = await self.exchange_client.get_order_info(order.order_id)
                         self.order_filled_amount += order_info.filled_size                        
-                    self.logger.log(f"[CLOSE] Cancle order {order.order_id} Finished, self.order_filled_amount:{self.order_filled_amount}")
+                    self.logger.log(f"[CLOSE] Cancle order {order.order_id} Finished, filled_amount:{self.order_filled_amount}")
                     return True
         except Exception as e:
             self.order_canceled_event.set()

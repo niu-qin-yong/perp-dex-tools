@@ -428,7 +428,7 @@ class EdgeXClient(BaseExchangeClient):
                             status=order_info.status
                         )
                     else:
-                        return OrderResult(success=False, error_message=f'Unexpected close order status: {order_info.status}')
+                        return OrderResult(success=False, status=order_info.status, error_message=f'Unexpected close order status: {order_info.status}')
                 else:
                     # Assume order is successful if we can't get info
                     return OrderResult(
