@@ -22,6 +22,10 @@ import websockets
 from datetime import datetime
 import pytz
 
+from helpers import decrypt_pwd
+import base64
+
+
 class Config:
     """Simple config class to wrap dictionary for Backpack client."""
     def __init__(self, config_dict):
@@ -32,7 +36,7 @@ class Config:
 class HedgeBot:
     """Trading bot that places post-only orders on Backpack and hedges with market orders on Lighter."""
 
-    def __init__(self, ticker: str, order_quantity: Decimal, fill_timeout: int = 5, iterations: int = 20):
+    def __init__(self, ticker: str, order_quantity: Decimal, password: str, fill_timeout: int = 5, iterations: int = 20):
         self.ticker = ticker
         self.order_quantity = order_quantity
         self.fill_timeout = fill_timeout
@@ -41,6 +45,7 @@ class HedgeBot:
         self.backpack_position = Decimal('0')
         self.lighter_position = Decimal('0')
         self.current_order = {}
+        self.password = password
 
         # Initialize logging to file
         os.makedirs("logs", exist_ok=True)
@@ -142,8 +147,16 @@ class HedgeBot:
         self.api_key_index = int(os.getenv('LIGHTER_API_KEY_INDEX'))
 
         # Backpack configuration
-        self.backpack_public_key = os.getenv('BACKPACK_PUBLIC_KEY')
-        self.backpack_secret_key = os.getenv('BACKPACK_SECRET_KEY')
+        BACKPACK_PUBLIC_KEY = os.getenv('BACKPACK_PUBLIC_KEY')
+        salt_b64_public_key = os.getenv('SALT_BACKPACK_PUBLIC_KEY')
+        self.backpack_public_key = decrypt_pwd.decrypt_private_key(BACKPACK_PUBLIC_KEY,
+                                        self.password,
+                                        base64.b64decode(salt_b64_public_key))
+        BACKPACK_SECRET_KEY = os.getenv('BACKPACK_SECRET_KEY')
+        salt_b64_secret_key = os.getenv('SALT_BACKPACK_SECRET_KEY')
+        self.backpack_secret_key = decrypt_pwd.decrypt_private_key(BACKPACK_SECRET_KEY,
+                                        self.password,
+                                        base64.b64decode(salt_b64_secret_key))
 
     def shutdown(self, signum=None, frame=None):
         """Graceful shutdown handler."""
@@ -503,7 +516,12 @@ class HedgeBot:
     def initialize_lighter_client(self):
         """Initialize the Lighter client."""
         if self.lighter_client is None:
-            api_key_private_key = os.getenv('API_KEY_PRIVATE_KEY')
+            API_KEY_PRIVATE_KEY = os.getenv('API_KEY_PRIVATE_KEY')
+            salt_b64_key = os.getenv('SALT_API_KEY_PRIVATE_KEY')
+            api_key_private_key = decrypt_pwd.decrypt_private_key(API_KEY_PRIVATE_KEY,
+                                        self.password,
+                                        base64.b64decode(salt_b64_key))
+
             if not api_key_private_key:
                 raise Exception("API_KEY_PRIVATE_KEY environment variable not set")
 
@@ -533,7 +551,8 @@ class HedgeBot:
             'contract_id': '',  # Will be set when we get contract info
             'quantity': self.order_quantity,
             'tick_size': Decimal('0.01'),  # Will be updated when we get contract info
-            'close_order_side': 'sell'  # Default, will be updated based on strategy
+            'close_order_side': 'sell',  # Default, will be updated based on strategy
+            'password': self.password
         }
 
         # Wrap in Config class for Backpack client
