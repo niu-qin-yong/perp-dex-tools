@@ -94,6 +94,7 @@ class MyStrategyBot:
         self.loop = None
         self.stop_loss_maker_max_times = 10
         self.retry_times = 0
+        self.current_order_quantity = 0
 
         # Register order callback
         self._setup_websocket_handlers()
@@ -328,7 +329,7 @@ class MyStrategyBot:
             # stop loss immediate with the market order
             market_order = await self.exchange_client.place_market_order(
                 self.config.contract_id,
-                self.config.quantity-self.order_filled_amount,
+                self.current_order_quantity-self.order_filled_amount,
                 self.config.close_order_side
             )
 
@@ -344,6 +345,9 @@ class MyStrategyBot:
         """Monitor the close order."""
 
         self.logger.log(f'[OPEN] 开仓成交 {self.config.direction} {open_filled_quantity} @ {open_filled_price}')
+
+        # record current open order filled quantity
+        self.current_order_quantity = open_filled_quantity
 
         # record the open order filled-price
         self.current_order_open_price = Decimal(open_filled_price)
@@ -452,7 +456,7 @@ class MyStrategyBot:
                 #     self.close_order_filled_event.set()
                 #     break
 
-                if self.config.quantity-self.order_filled_amount <= 0:
+                if self.current_order_quantity - self.order_filled_amount <= 0:
                     self.logger.log(f"[CLOSE] the quantity is negative, {close_order_result.order_id} may have been filled {close_order_result.side} {close_order_result.size} @ {close_order_result.price}")
                     break
 
@@ -463,7 +467,7 @@ class MyStrategyBot:
                 close_price = await self.exchange_client.get_order_price(close_side)
                 close_order_result = await self.exchange_client.place_close_order(
                     self.config.contract_id,
-                    self.config.quantity-self.order_filled_amount,
+                    self.current_order_quantity-self.order_filled_amount,
                     close_price,
                     close_side
                 )
@@ -786,11 +790,11 @@ class MyStrategyBot:
                 if not mismatch_detected:
                     if not active_orders:
                         # place open order
+                        self.logger.log("准备开仓.....","INFO")
                         await self._place_and_monitor_open_order()
-                        continue
                     elif self.active_close_orders:
                         # monitor close order
-                        print(f'监控已有order,active_close_orders lens: {len(active_orders)}')
+                        self.logger.log(f'监控已有order,active_close_orders lens: {len(self.active_close_orders)}')
                         # close_order = self.active_close_orders[0]
                         # self._place_and_monitor_close_order(close_order.price,close_order.executedQuantity)
                         await asyncio.sleep(3)
