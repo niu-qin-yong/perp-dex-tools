@@ -121,31 +121,14 @@ async def main():
     
     try:
         # Create the hedge bot instance
-<<<<<<< HEAD
-        if args.exchange.lower() == 'backpack':
-            bot = HedgeBotClass(
-                ticker=args.ticker.upper(),
-                order_quantity=Decimal(args.size),
-                fill_timeout=args.fill_timeout,
-                iterations=args.iter,
-                password=args.password
-            )
-        else:  # extended
-            bot = HedgeBotClass(
-                ticker=args.ticker.upper(),
-                order_quantity=Decimal(args.size),
-                fill_timeout=args.fill_timeout,
-                iterations=args.iter
-            )
-=======
         bot = HedgeBotClass(
             ticker=args.ticker.upper(),
             order_quantity=Decimal(args.size),
             fill_timeout=args.fill_timeout,
             iterations=args.iter,
+            password=args.password,
             sleep_time=args.sleep
         )
->>>>>>> main
         
         # Run the bot
         await bot.run()

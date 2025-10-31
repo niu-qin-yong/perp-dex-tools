@@ -19,13 +19,16 @@ from datetime import datetime
 import pytz
 import dotenv
 
+from helpers import decrypt_pwd
+import base64
+
 dotenv.load_dotenv()
 
 
 class HedgeBot:
     """Trading bot that places post-only orders on edgeX and hedges with market orders on Lighter."""
 
-    def __init__(self, ticker: str, order_quantity: Decimal, fill_timeout: int = 5, iterations: int = 20, sleep_time: int = 0):
+    def __init__(self, ticker: str, order_quantity: Decimal, password: str, fill_timeout: int = 5, iterations: int = 20, sleep_time: int = 0):
         self.ticker = ticker
         self.order_quantity = order_quantity
         self.fill_timeout = fill_timeout
@@ -34,6 +37,7 @@ class HedgeBot:
         self.edgex_position = Decimal('0')
         self.lighter_position = Decimal('0')
         self.edgex_client_order_id = ''
+        self.password = password
 
         # Initialize logging to file
         os.makedirs("logs", exist_ok=True)
@@ -128,10 +132,24 @@ class HedgeBot:
         self.api_key_index = int(os.getenv('LIGHTER_API_KEY_INDEX'))
         
         # edgeX configuration
-        self.edgex_account_id = os.getenv('EDGEX_ACCOUNT_ID')
-        self.edgex_stark_private_key = os.getenv('EDGEX_STARK_PRIVATE_KEY')
+        EDGEX_ACCOUNT_ID = os.getenv('EDGEX_ACCOUNT_ID')
+        salt_b64_id = os.getenv('SALT_EDGEX_ACCOUNT_ID')
+        self.edgex_account_id = decrypt_pwd.decrypt_private_key(EDGEX_ACCOUNT_ID,
+                                        self.password,
+                                        base64.b64decode(salt_b64_id))
+
+        EDGEX_STARK_PRIVATE_KEY = os.getenv('EDGEX_STARK_PRIVATE_KEY')
+        salt_b64_secret_key = os.getenv('SALT_EDGEX_STARK_PRIVATE_KEY')
+        self.edgex_stark_private_key = decrypt_pwd.decrypt_private_key(EDGEX_STARK_PRIVATE_KEY,
+                                        self.password,
+                                        base64.b64decode(salt_b64_secret_key))                                        
+
         self.edgex_base_url = os.getenv('EDGEX_BASE_URL', 'https://pro.edgex.exchange')
         self.edgex_ws_url = os.getenv('EDGEX_WS_URL', 'wss://quote.edgex.exchange')
+
+
+        
+
 
     def shutdown(self, signum=None, frame=None):
         """Graceful shutdown handler."""
@@ -193,7 +211,12 @@ class HedgeBot:
     async def initialize_lighter_client(self):
         """Initialize the Lighter client."""
         if self.lighter_client is None:
-            api_key_private_key = os.getenv('API_KEY_PRIVATE_KEY')
+            API_KEY_PRIVATE_KEY = os.getenv('API_KEY_PRIVATE_KEY')
+            salt_b64_key = os.getenv('SALT_API_KEY_PRIVATE_KEY')
+            api_key_private_key = decrypt_pwd.decrypt_private_key(API_KEY_PRIVATE_KEY,
+                                        self.password,
+                                        base64.b64decode(salt_b64_key))
+
             if not api_key_private_key:
                 raise Exception("API_KEY_PRIVATE_KEY environment variable not set")
 
