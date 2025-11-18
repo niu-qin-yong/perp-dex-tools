@@ -154,6 +154,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env_zhu
 .venv
 env/
 *_env/

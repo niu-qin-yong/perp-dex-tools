@@ -1217,9 +1217,10 @@ class HedgeBot:
                     break
 
             # Sleep after step 2
-            if self.sleep_time > 0:
-                self.logger.info(f"💤 Sleeping {self.sleep_time} seconds after STEP 2...")
-                await asyncio.sleep(self.sleep_time)
+            # if self.sleep_time > 0:
+            #     self.logger.info(f"💤 Sleeping {self.sleep_time} seconds after STEP 2...")
+            #     await asyncio.sleep(self.sleep_time)
+            self.logger.info(f"💤 no Sleeping after STEP 2...")
             
             # Close remaining position
             self.logger.info(f"[STEP 3] EdgeX position: {self.edgex_position} | Lighter position: {self.lighter_position}")

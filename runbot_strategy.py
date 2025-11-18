@@ -52,6 +52,7 @@ def parse_arguments():
     parser.add_argument('--password', required=True, help='the password to decrypt key')
     parser.add_argument('--stop-loss', type=Decimal, default=Decimal(1), help='Price to stop loss')
     parser.add_argument('--stop-loss-immediate', type=Decimal, default=-1, help='Price to stop loss immediately')
+    parser.add_argument('--duration', type=Decimal, default=-1, help='Time the bot will run')
 
     return parser.parse_args()
 
@@ -122,7 +123,8 @@ async def main():
         stop_price=Decimal(args.stop_price),
         pause_price=Decimal(args.pause_price),
         boost_mode=args.boost,
-        password=args.password
+        password=args.password,
+        duration = args.duration
     )
 
     # Create and run the bot

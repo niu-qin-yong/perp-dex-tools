@@ -40,6 +40,7 @@ class MyStrategyConfig:
     pause_price: Decimal
     boost_mode: bool
     password: str
+    duration: Decimal
 
     @property
     def close_order_side(self) -> str:
@@ -95,6 +96,7 @@ class MyStrategyBot:
         self.stop_loss_maker_max_times = 10
         self.retry_times = 0
         self.current_order_quantity = 0
+        self.begintime = 0
 
         # Register order callback
         self._setup_websocket_handlers()
@@ -741,6 +743,9 @@ class MyStrategyBot:
     async def run(self):
         """Main trading loop."""
         try:
+            # record the begin time
+            self.begintime = time.time()
+
             self.config.contract_id, self.config.tick_size = await self.exchange_client.get_contract_attributes()
 
             # Log current TradingConfig
@@ -759,6 +764,7 @@ class MyStrategyBot:
             self.logger.log(f"Stop Price: {self.config.stop_price}", "INFO")
             self.logger.log(f"Pause Price: {self.config.pause_price}", "INFO")
             self.logger.log(f"Boost Mode: {self.config.boost_mode}", "INFO")
+            self.logger.log(f"Duration: {self.config.duration}", "INFO")
             self.logger.log("=============================", "INFO")
 
             # Capture the running event loop for thread-safe callbacks
@@ -798,6 +804,12 @@ class MyStrategyBot:
                         # close_order = self.active_close_orders[0]
                         # self._place_and_monitor_close_order(close_order.price,close_order.executedQuantity)
                         await asyncio.sleep(3)
+                
+                # check the running duration time
+                if self.config.duration != -1 and (time.time() - self.begintime >= self.config.duration):
+                    self.logger.log("The running duration is up, the bot will end", "INFO")
+                    self.shutdown_requested = True
+
         except KeyboardInterrupt:
             self.logger.log("Bot stopped by user")
             await self.graceful_shutdown("User interruption (Ctrl+C)")
