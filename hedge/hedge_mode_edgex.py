@@ -740,8 +740,7 @@ class HedgeBot:
                                 elif data.get("type") == "update/account_orders":
                                     # Handle account orders updates
                                     orders = data.get("orders", {}).get(str(self.lighter_market_index), [])
-                                    if len(orders) == 1:
-                                        order_data = orders[0]
+                                    for order_data in orders:
                                         if order_data.get("status") == "filled":
                                             self.handle_lighter_order_result(order_data)
                                 elif data.get("type") == "update/order_book" and not self.lighter_snapshot_loaded:
@@ -1215,12 +1214,6 @@ class HedgeBot:
                 if time.time() - start_time2 > 180:
                     self.logger.error(f"❌ Timeout waiting for trade completion")
                     break
-
-            # Sleep after step 2
-            # if self.sleep_time > 0:
-            #     self.logger.info(f"💤 Sleeping {self.sleep_time} seconds after STEP 2...")
-            #     await asyncio.sleep(self.sleep_time)
-            self.logger.info(f"💤 no Sleeping after STEP 2...")
             
             # Close remaining position
             self.logger.info(f"[STEP 3] EdgeX position: {self.edgex_position} | Lighter position: {self.lighter_position}")
