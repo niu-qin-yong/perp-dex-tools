@@ -17,21 +17,20 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from exchanges.grvt import GrvtClient
+from exchanges.nado import NadoClient
 import websockets
 from datetime import datetime
 import pytz
 
-
 class Config:
-    """Simple config class to wrap dictionary for GRVT client."""
+    """Simple config class to wrap dictionary for Nado client."""
     def __init__(self, config_dict):
         for key, value in config_dict.items():
             setattr(self, key, value)
 
 
 class HedgeBot:
-    """Trading bot that places post-only orders on GRVT and hedges with market orders on Lighter."""
+    """Trading bot that places post-only orders on Nado and hedges with market orders on Lighter."""
 
     def __init__(self, ticker: str, order_quantity: Decimal, fill_timeout: int = 5, iterations: int = 20, sleep_time: int = 0, max_position: Decimal = Decimal('0')):
         self.ticker = ticker
@@ -40,18 +39,16 @@ class HedgeBot:
         self.lighter_order_filled = False
         self.iterations = iterations
         self.sleep_time = sleep_time
-        self.grvt_position = Decimal('0')
-        self.lighter_position = Decimal('0')
         self.current_order = {}
         if max_position == Decimal('0'):
             self.max_position = order_quantity
         else:
-            self.max_position = max_position
+            self.max_position = max_position        
 
         # Initialize logging to file
         os.makedirs("logs", exist_ok=True)
-        self.log_filename = f"logs/grvt_{ticker}_hedge_mode_log.txt"
-        self.csv_filename = f"logs/grvt_{ticker}_hedge_mode_trades.csv"
+        self.log_filename = f"logs/nado_{ticker}_hedge_mode_log.txt"
+        self.csv_filename = f"logs/nado_{ticker}_hedge_mode_trades.csv"
         self.original_stdout = sys.stdout
 
         # Initialize CSV file with headers if it doesn't exist
@@ -65,19 +62,9 @@ class HedgeBot:
         self.logger.handlers.clear()
 
         # Disable verbose logging from external libraries
-        logging.getLogger('urllib3').setLevel(logging.CRITICAL)
-        logging.getLogger('requests').setLevel(logging.CRITICAL)
-        logging.getLogger('websockets').setLevel(logging.CRITICAL)
-        logging.getLogger('pysdk').setLevel(logging.CRITICAL)
-        logging.getLogger('pysdk.grvt_ccxt').setLevel(logging.CRITICAL)
-        logging.getLogger('pysdk.grvt_ccxt_ws').setLevel(logging.CRITICAL)
-        logging.getLogger('pysdk.grvt_ccxt_logging_selector').setLevel(logging.CRITICAL)
-        logging.getLogger('pysdk.grvt_ccxt_env').setLevel(logging.CRITICAL)
-        logging.getLogger('lighter').setLevel(logging.CRITICAL)
-        logging.getLogger('lighter.signer_client').setLevel(logging.CRITICAL)
-        
-        # Disable root logger propagation to prevent external logs
-        logging.getLogger().setLevel(logging.CRITICAL)
+        logging.getLogger('urllib3').setLevel(logging.WARNING)
+        logging.getLogger('requests').setLevel(logging.WARNING)
+        logging.getLogger('websockets').setLevel(logging.WARNING)
 
         # Create file handler
         file_handler = logging.FileHandler(self.log_filename)
@@ -98,24 +85,24 @@ class HedgeBot:
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
 
-        # Prevent propagation to root logger to avoid duplicate messages and external logs
+        # Prevent propagation to root logger to avoid duplicate messages
         self.logger.propagate = False
-        
-        # Ensure our logger only shows our messages
-        self.logger.setLevel(logging.INFO)
 
         # State management
         self.stop_flag = False
         self.order_counter = 0
 
-        # GRVT state
-        self.grvt_client = None
-        self.grvt_contract_id = None
-        self.grvt_tick_size = None
-        self.grvt_order_status = None
+        # Nado state
+        self.nado_client = None
+        self.nado_contract_id = None
+        self.nado_tick_size = None
+        self.nado_order_status = None
+        self.nado_position = Decimal(0)
 
-        # GRVT order book state (not used since we use REST API for BBO)
-        # Keeping variables for potential future use but not initializing them
+        # Nado order book state for REST API-based BBO
+        self.nado_best_bid = None
+        self.nado_best_ask = None
+        self.nado_order_book_ready = False
 
         # Lighter order book state
         self.lighter_client = None
@@ -157,25 +144,20 @@ class HedgeBot:
         self.account_index = int(os.getenv('LIGHTER_ACCOUNT_INDEX'))
         self.api_key_index = int(os.getenv('LIGHTER_API_KEY_INDEX'))
 
-        # GRVT configuration
-        self.grvt_trading_account_id = os.getenv('GRVT_TRADING_ACCOUNT_ID')
-        self.grvt_private_key = os.getenv('GRVT_PRIVATE_KEY')
-        self.grvt_api_key = os.getenv('GRVT_API_KEY')
-        self.grvt_environment = os.getenv('GRVT_ENVIRONMENT', 'prod')
+        # Nado configuration
+        self.nado_private_key = os.getenv('NADO_PRIVATE_KEY')
 
     def shutdown(self, signum=None, frame=None):
         """Graceful shutdown handler."""
         self.stop_flag = True
         self.logger.info("\n🛑 Stopping...")
 
-        # Close WebSocket connections
-        if self.grvt_client:
+        # Close connections
+        if self.nado_client:
             try:
-                # Note: disconnect() is async, but shutdown() is sync
-                # We'll let the cleanup happen naturally
-                self.logger.info("🔌 GRVT WebSocket will be disconnected")
+                self.logger.info("🔌 Nado client will be disconnected")
             except Exception as e:
-                self.logger.error(f"Error disconnecting GRVT WebSocket: {e}")
+                self.logger.error(f"Error disconnecting Nado client: {e}")
 
         # Cancel Lighter WebSocket task
         if self.lighter_ws_task and not self.lighter_ws_task.done():
@@ -535,12 +517,12 @@ class HedgeBot:
             self.logger.info("✅ Lighter client initialized successfully")
         return self.lighter_client
 
-    def initialize_grvt_client(self):
-        """Initialize the GRVT client."""
-        if not all([self.grvt_trading_account_id, self.grvt_private_key, self.grvt_api_key]):
-            raise ValueError("GRVT_TRADING_ACCOUNT_ID, GRVT_PRIVATE_KEY, and GRVT_API_KEY must be set in environment variables")
+    def initialize_nado_client(self):
+        """Initialize the Nado client."""
+        if not self.nado_private_key:
+            raise ValueError("NADO_PRIVATE_KEY must be set in environment variables")
 
-        # Create config for GRVT client
+        # Create config for Nado client
         config_dict = {
             'ticker': self.ticker,
             'contract_id': '',  # Will be set when we get contract info
@@ -549,14 +531,14 @@ class HedgeBot:
             'close_order_side': 'sell'  # Default, will be updated based on strategy
         }
 
-        # Wrap in Config class for GRVT client
+        # Wrap in Config class for Nado client
         config = Config(config_dict)
 
-        # Initialize GRVT client
-        self.grvt_client = GrvtClient(config)
+        # Initialize Nado client
+        self.nado_client = NadoClient(config)
 
-        self.logger.info("✅ GRVT client initialized successfully")
-        return self.grvt_client
+        self.logger.info("✅ Nado client initialized successfully")
+        return self.nado_client
 
     def get_lighter_market_config(self) -> Tuple[int, int, int, Decimal]:
         """Get Lighter market configuration."""
@@ -583,155 +565,108 @@ class HedgeBot:
                            price_multiplier,
                            Decimal("1") / (Decimal("10") ** market["supported_price_decimals"])
                            )
-
             raise Exception(f"Ticker {self.ticker} not found")
 
         except Exception as e:
             self.logger.error(f"⚠️ Error getting market config: {e}")
             raise
 
-    async def get_grvt_contract_info(self) -> Tuple[str, Decimal]:
-        """Get GRVT contract ID and tick size."""
-        if not self.grvt_client:
-            raise Exception("GRVT client not initialized")
+    async def get_nado_contract_info(self) -> Tuple[str, Decimal]:
+        """Get Nado contract ID and tick size."""
+        if not self.nado_client:
+            raise Exception("Nado client not initialized")
 
-        contract_id, tick_size = await self.grvt_client.get_contract_attributes()
+        contract_id, tick_size = await self.nado_client.get_contract_attributes()
 
-        if self.order_quantity < self.grvt_client.config.quantity:
+        if self.order_quantity < self.nado_client.config.quantity:
             raise ValueError(
-                f"Order quantity is less than min quantity: {self.order_quantity} < {self.grvt_client.config.quantity}")
+                f"Order quantity is less than min quantity: {self.order_quantity} < {self.nado_client.config.quantity}")
 
         return contract_id, tick_size
 
-    async def get_grvt_position(self) -> Decimal:
-        """Get GRVT position."""
-        if not self.grvt_client:
-            raise Exception("GRVT client not initialized")
+    async def get_nado_position(self) -> Decimal:
+        """Get Nado position."""
+        if not self.nado_client:
+            raise Exception("Nado client not initialized")
 
-        return await self.grvt_client.get_account_positions()
+        return await self.nado_client.get_account_positions()
 
-    def get_lighter_position(self):
-        url = "https://mainnet.zklighter.elliot.ai/api/v1/account"
-        headers = {"accept": "application/json"}
+    async def fetch_nado_bbo_prices(self) -> Tuple[Decimal, Decimal]:
+        """Fetch best bid/ask prices from Nado using REST API."""
+        if not self.nado_client:
+            raise Exception("Nado client not initialized")
 
-        current_position = Decimal('0')
-        parameters = {"by": "index", "value": self.account_index}
-        try:
-            response = requests.get(url, headers=headers, params=parameters, timeout=10)
-            response.raise_for_status()  # Raise an exception for bad status codes
-
-            # Check if response has content
-            if not response.text.strip():
-                print("⚠️ Empty response from Lighter API for position check")
-                return self.lighter_position
-
-            data = response.json()
-
-            if 'accounts' not in data or not data['accounts']:
-                print(f"⚠️ Unexpected response format from Lighter API: {data}")
-                return self.lighter_position
-
-            positions = data['accounts'][0].get('positions', [])
-            for position in positions:
-                if position.get('symbol') == self.ticker:
-                    current_position = Decimal(position['position']) * position['sign']
-                    break
-
-        except requests.exceptions.RequestException as e:
-            print(f"⚠️ Network error getting position: {e}")
-            return self.lighter_position
-        except json.JSONDecodeError as e:
-            print(f"⚠️ JSON parsing error in position response: {e}")
-            if 'response' in locals():
-                print(f"Response text: {response.text[:200]}...")  # Show first 200 chars
-            return self.lighter_position
-        except Exception as e:
-            print(f"⚠️ Unexpected error getting position: {e}")
-            return self.lighter_position
-
-        return current_position
-
-    async def fetch_grvt_bbo_prices(self) -> Tuple[Decimal, Decimal]:
-        """Fetch best bid/ask prices from GRVT using REST API."""
-        if not self.grvt_client:
-            raise Exception("GRVT client not initialized")
-
-        best_bid, best_ask = await self.grvt_client.fetch_bbo_prices(self.grvt_contract_id)
+        best_bid, best_ask = await self.nado_client.fetch_bbo_prices(self.nado_client.symbol + '_USDT0')
 
         return best_bid, best_ask
 
     def round_to_tick(self, price: Decimal) -> Decimal:
         """Round price to tick size."""
-        if self.grvt_tick_size is None:
+        if self.nado_tick_size is None:
             return price
-        return (price / self.grvt_tick_size).quantize(Decimal('1')) * self.grvt_tick_size
+        return (price / self.nado_tick_size).quantize(Decimal('1')) * self.nado_tick_size
 
     async def place_bbo_order(self, side: str, quantity: Decimal):
-        # Place the order using GRVT client
-        order_result = await self.grvt_client.place_open_order(
-            contract_id=self.grvt_contract_id,
+        # Place the order using Nado client
+        order_result = await self.nado_client.place_open_order(
+            contract_id=self.nado_contract_id,
             quantity=quantity,
             direction=side.lower()
         )
 
-        if order_result is None:
-            raise Exception("Failed to place order")
-        elif order_result.success:
-            return order_result.order_id, order_result.price
+        if order_result.success:
+            return order_result.order_id
         else:
             raise Exception(f"Failed to place order: {order_result.error_message}")
 
-    async def place_grvt_post_only_order(self, side: str, quantity: Decimal):
-        """Place a post-only order on GRVT."""
-        if not self.grvt_client:
-            raise Exception("GRVT client not initialized")
+    async def place_nado_post_only_order(self, side: str, quantity: Decimal) -> Decimal:
+        """Place a post-only order on Nado."""
+        if not self.nado_client:
+            raise Exception("Nado client not initialized")
 
-        self.grvt_order_status = None
-        self.logger.info(f"[OPEN] [GRVT] [{side}] Placing GRVT POST-ONLY order")
-        order_id, order_price = await self.place_bbo_order(side, quantity)
+        self.nado_order_status = None
+        self.logger.info(f"[Nado] [{side}] Placing Nado POST-ONLY order")
+        order_id = await self.place_bbo_order(side, quantity)
 
         start_time = time.time()
         while not self.stop_flag:
-            if self.grvt_order_status == 'CANCELED':
-                self.grvt_order_status = 'NEW'
-                order_id, order_price = await self.place_bbo_order(side, quantity)
-                start_time = time.time()
-                await asyncio.sleep(0.5)
-            elif self.grvt_order_status in ['NEW', 'OPEN', 'PENDING', 'CANCELING', 'PARTIALLY_FILLED']:
-                await asyncio.sleep(0.5)
-                # Check if we need to cancel and replace the order
-                should_cancel = False
-                best_bid, best_ask = await self.fetch_grvt_bbo_prices()
+            # Poll for order status
+            order_info = await self.nado_client.get_order_info(order_id)
+
+            status = order_info.status
+            price = order_info.price
+
+            if status in ['FILLED', 'CANCELLED']:
+                self.nado_order_status = status
+                return order_info.filled_size, order_info.price
+            elif time.time() - start_time > self.fill_timeout:
+                best_bid, best_ask = await self.nado_client.fetch_bbo_prices(self.nado_client.symbol + '_USDT0')
                 if side == 'buy':
-                    if order_price < best_bid:
-                        should_cancel = True
+                    current_price = best_ask - self.nado_tick_size
                 else:
-                    if order_price > best_ask:
-                        should_cancel = True
-                if time.time() - start_time > 10:
-                    if should_cancel:
-                        try:
-                            # Cancel the order using GRVT client
-                            cancel_result = await self.grvt_client.cancel_order(order_id)
-                            if not cancel_result.success:
-                                self.logger.error(f"❌ Error canceling GRVT order: {cancel_result.error_message}")
-                        except Exception as e:
-                            self.logger.error(f"❌ Error canceling GRVT order: {e}")
-                    else:
-                        self.logger.info(f"Order {order_id} is at best bid/ask, waiting for fill")
-                        start_time = time.time()
-            elif self.grvt_order_status == 'FILLED':
-                break
-            else:
-                if self.grvt_order_status is not None:
-                    self.logger.error(f"❌ Unknown GRVT order status: {self.grvt_order_status}")
-                    break
+                    current_price = best_bid + self.nado_tick_size
+
+                if price != current_price:
+                    self.logger.info(f"[Nado] [{side}] [CANCELING] Price changed, canceling order")
+                    try:
+                        # Cancel the order using Nado client
+                        cancel_result = await self.nado_client.cancel_order(order_id)
+                        if not cancel_result.success:
+                            self.logger.error(f"❌ Error canceling Nado order: {cancel_result.error_message}")
+                            return Decimal(0), Decimal(0)
+                        else:
+                            self.logger.info(f"Failed to cancel Nado order")
+                            return cancel_result.filled_size, cancel_result.price
+                    except Exception as e:
+                        self.logger.error(f"❌ Error canceling Nado order: {e}")
+                        return Decimal(0), Decimal(0)
                 else:
                     await asyncio.sleep(0.5)
+            else:
+                await asyncio.sleep(0.5)
 
-
-    def handle_grvt_order_update(self, order_data):
-        """Handle GRVT order updates from WebSocket."""
+    def handle_nado_order_update(self, order_data):
+        """Handle Nado order updates."""
         side = order_data.get('side', '').lower()
         filled_size = Decimal(order_data.get('filled_size', '0'))
         price = Decimal(order_data.get('price', '0'))
@@ -754,8 +689,7 @@ class HedgeBot:
 
         self.waiting_for_lighter_fill = True
 
-
-    async def place_lighter_market_order(self, lighter_side: str, quantity: Decimal, price: Decimal):
+    async def place_lighter_market_order(self, lighter_side: str, quantity: Decimal):
         if not self.lighter_client:
             await self.initialize_lighter_client()
 
@@ -801,7 +735,7 @@ class HedgeBot:
                 tx_info=tx_info
             )
 
-            self.logger.info(f"[{client_order_index}] [{order_type}] [Lighter] [OPEN]: {quantity}")
+            self.logger.info(f"[Lighter] [OPEN]: {quantity}")
 
             await self.monitor_lighter_order(client_order_index)
 
@@ -864,80 +798,44 @@ class HedgeBot:
             import traceback
             self.logger.error(f"❌ Full traceback: {traceback.format_exc()}")
 
-    async def setup_grvt_websocket(self):
-        """Setup GRVT websocket for order updates and order book data."""
-        if not self.grvt_client:
-            raise Exception("GRVT client not initialized")
+    def get_lighter_position(self):
+        url = "https://mainnet.zklighter.elliot.ai/api/v1/account"
+        headers = {"accept": "application/json"}
 
-        def order_update_handler(order_data):
-            """Handle order updates from GRVT WebSocket."""
-            if order_data.get('contract_id') != self.grvt_contract_id:
-                return
-            try:
-                order_id = order_data.get('order_id')
-                status = order_data.get('status')
-                side = order_data.get('side', '').lower()
-                filled_size = Decimal(order_data.get('filled_size', '0'))
-                size = Decimal(order_data.get('size', '0'))
-                price = order_data.get('price', '0')
-
-                if side == 'buy':
-                    order_type = "OPEN"
-                else:
-                    order_type = "CLOSE"
-                
-                if status == 'CANCELED' and filled_size > 0:
-                    status = 'FILLED'
-
-                # Handle the order update
-                if status == 'FILLED' and self.grvt_order_status != 'FILLED':
-                    if side == 'buy':
-                        self.grvt_position += filled_size
-                    else:
-                        self.grvt_position -= filled_size
-                    self.logger.info(f"[{order_id}] [{order_type}] [GRVT] [{status}]: {filled_size} @ {price}")
-                    self.grvt_order_status = status
-
-                    # Log GRVT trade to CSV
-                    self.log_trade_to_csv(
-                        exchange='GRVT',
-                        side=side,
-                        price=str(price),
-                        quantity=str(filled_size)
-                    )
-
-                    self.handle_grvt_order_update({
-                        'order_id': order_id,
-                        'side': side,
-                        'status': status,
-                        'size': size,
-                        'price': price,
-                        'contract_id': self.grvt_contract_id,
-                        'filled_size': filled_size
-                    })
-                elif self.grvt_order_status != 'FILLED':
-                    if status == 'OPEN':
-                        self.logger.info(f"[{order_id}] [{order_type}] [GRVT] [{status}]: {size} @ {price}")
-                    else:
-                        self.logger.info(f"[{order_id}] [{order_type}] [GRVT] [{status}]: {filled_size} @ {price}")
-                    self.grvt_order_status = status
-
-            except Exception as e:
-                self.logger.error(f"Error handling GRVT order update: {e}")
-
+        current_position = None
+        parameters = {"by": "index", "value": self.account_index}
         try:
-            # Setup order update handler
-            self.grvt_client.setup_order_update_handler(order_update_handler)
-            self.logger.info("✅ GRVT WebSocket order update handler set up")
+            response = requests.get(url, headers=headers, params=parameters, timeout=10)
+            response.raise_for_status()  # Raise an exception for bad status codes
 
-            # Connect to GRVT WebSocket
-            await self.grvt_client.connect()
-            self.logger.info("✅ GRVT WebSocket connection established")
+            # Check if response has content
+            if not response.text.strip():
+                print("⚠️ Empty response from Lighter API for position check")
+                return self.lighter_position
 
+            data = response.json()
 
+            if 'accounts' not in data or not data['accounts']:
+                print(f"⚠️ Unexpected response format from Lighter API: {data}")
+                return self.lighter_position
+
+            positions = data['accounts'][0].get('positions', [])
+            for position in positions:
+                if position.get('symbol') == self.ticker:
+                    current_position = Decimal(position['position']) * position['sign']
+                    break
+            if current_position is None:
+                current_position = 0
+
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️ Network error getting position: {e}")
+        except json.JSONDecodeError as e:
+            print(f"⚠️ JSON parsing error in position response: {e}")
+            print(f"Response text: {response.text[:200]}...")  # Show first 200 chars
         except Exception as e:
-            self.logger.error(f"Could not setup GRVT WebSocket handlers: {e}")
+            print(f"⚠️ Unexpected error getting position: {e}")
 
+        return current_position
 
     async def trading_loop(self):
         """Main trading loop implementing the new strategy."""
@@ -946,26 +844,36 @@ class HedgeBot:
         # Initialize clients
         try:
             self.initialize_lighter_client()
-            self.initialize_grvt_client()
+            self.initialize_nado_client()
 
             # Get contract info
-            self.grvt_contract_id, self.grvt_tick_size = await self.get_grvt_contract_info()
+            self.nado_contract_id, self.nado_tick_size = await self.get_nado_contract_info()
             self.lighter_market_index, self.base_amount_multiplier, self.price_multiplier, self.tick_size = self.get_lighter_market_config()
 
-            self.logger.info(f"Contract info loaded - GRVT: {self.grvt_contract_id}, "
+            self.logger.info(f"Contract info loaded - Nado: {self.nado_contract_id}, "
                              f"Lighter: {self.lighter_market_index}")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize: {e}")
             return
 
-        # Setup GRVT websocket
+        # Connect to Nado
         try:
-            await self.setup_grvt_websocket()
-            self.logger.info("✅ GRVT WebSocket connection established")
+            await self.nado_client.connect()
+            self.logger.info("✅ Nado client connected")
+
+            # Fetch initial BBO prices
+            best_bid, best_ask = await self.fetch_nado_bbo_prices()
+            if best_bid > 0 and best_ask > 0:
+                self.nado_best_bid = best_bid
+                self.nado_best_ask = best_ask
+                self.nado_order_book_ready = True
+                self.logger.info(f"✅ Nado order book ready - Best bid: {best_bid}, Best ask: {best_ask}")
+            else:
+                self.logger.warning("⚠️ Failed to get initial Nado order book data")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to setup GRVT websocket: {e}")
+            self.logger.error(f"❌ Failed to connect to Nado: {e}")
             return
 
         # Setup Lighter websocket
@@ -996,19 +904,19 @@ class HedgeBot:
 
         iterations = 0
         self.lighter_position = self.get_lighter_position()
-        self.grvt_position = await self.get_grvt_position()
+        self.nado_position = await self.get_nado_position()
         while iterations < self.iterations and not self.stop_flag:
             iterations += 1
             self.logger.info("-----------------------------------------------")
             self.logger.info(f"🔄 Trading loop iteration {iterations}")
             self.logger.info("-----------------------------------------------")
 
-            while self.grvt_position < self.max_position and not self.stop_flag:
+            while self.nado_position < self.max_position and not self.stop_flag:
                 self.lighter_position = self.get_lighter_position()
-                self.grvt_position = await self.get_grvt_position()
-                self.logger.info(f"Buying up to {self.max_position} | GRVT position: {self.grvt_position} | Lighter position: {self.lighter_position}")
-                if abs(self.grvt_position + self.lighter_position) > self.order_quantity*2:
-                    self.logger.error(f"❌ Position diff is too large: {self.grvt_position + self.lighter_position}")
+                self.nado_position = await self.get_nado_position()
+                self.logger.info(f"Buying up to {self.max_position} | Nado position: {self.nado_position} | Lighter position: {self.lighter_position}")
+                if abs(self.nado_position + self.lighter_position) > self.order_quantity*2:
+                    self.logger.error(f"❌ Position diff is too large: {self.nado_position + self.lighter_position}")
                     sys.exit(1)
 
                 self.order_execution_complete = False
@@ -1016,80 +924,79 @@ class HedgeBot:
                 try:
                     # Determine side based on some logic (for now, alternate)
                     side = 'buy'
-                    await self.place_grvt_post_only_order(side, self.order_quantity)
+                    filled_size, filled_price = await self.place_nado_post_only_order(side, self.order_quantity)
+                    if filled_size == 0:
+                        self.logger.info(f"[Nado] [{side}] [CANCELLED]")
+                        continue
                 except Exception as e:
-                    self.logger.error(f"⚠️ Error in trading loop: {e}")
+                    self.logger.error(f"⚠️ Error placing nado post only order: {e}")
                     self.logger.error(f"⚠️ Full traceback: {traceback.format_exc()}")
-                    await asyncio.sleep(10)
                     continue
 
-                start_time = time.time()
-                while not self.order_execution_complete and not self.stop_flag:
-                    # Check if GRVT order filled and we need to place Lighter order
-                    if self.waiting_for_lighter_fill:
-                        await self.place_lighter_market_order(
-                            self.current_lighter_side,
-                            self.current_lighter_quantity,
-                            self.current_lighter_price
-                        )
-                        break
+                self.logger.info(f"[Nado] [{side}] [FILLED]: {filled_size} @ {filled_price}")
+                # Log Nado trade to CSV
+                self.log_trade_to_csv(
+                    exchange='Nado',
+                    side='buy',
+                    price=str(filled_price),
+                    quantity=str(filled_size)
+                )
 
-                    await asyncio.sleep(0.01)
-                    if time.time() - start_time > 180:
-                        self.logger.error("❌ Timeout waiting for trade completion")
-                        break
+                self.nado_position += filled_size
 
-                if self.stop_flag:
-                    break
+                await self.place_lighter_market_order(
+                    'sell',
+                    abs(filled_size)
+                )
 
             if self.sleep_time > 0:
                 self.logger.info(f"💤 Sleeping {self.sleep_time} seconds ...")
                 await asyncio.sleep(self.sleep_time)
 
             exit_after_next_trade = False
-            while self.grvt_position > -1*self.max_position and not self.stop_flag:
+            while self.nado_position > -1 * self.max_position and not self.stop_flag:
                 self.lighter_position = self.get_lighter_position()
-                self.grvt_position = await self.get_grvt_position()
-                self.logger.info(f"Selling up to -{self.max_position} | GRVT position: {self.grvt_position} | Lighter position: {self.lighter_position}")
-                if abs(self.grvt_position + self.lighter_position) > self.order_quantity*2:
-                    self.logger.error(f"❌ Position diff is too large: {self.grvt_position + self.lighter_position}")
-                    self.stop_flag = True
-                    break
+                self.nado_position = await self.get_nado_position()
+                self.logger.info(f"Selling up to -{self.max_position} | Nado position: {self.nado_position} | Lighter position: {self.lighter_position}")
+                if abs(self.nado_position + self.lighter_position) > self.order_quantity*2:
+                    self.logger.error(f"❌ Position diff is too large: {self.nado_position + self.lighter_position}")
+                    sys.exit(1)
 
                 if iterations == self.iterations:
-                    if self.grvt_position>0 and self.grvt_position <= self.order_quantity:
+                    if self.nado_position>0 and self.nado_position <= self.order_quantity:
                         exit_after_next_trade = True
 
-                self.order_execution_complete = False
-                self.waiting_for_lighter_fill = False
                 try:
                     # Determine side based on some logic (for now, alternate)
                     side = 'sell'
                     if exit_after_next_trade:
-                        await self.place_grvt_post_only_order(side, abs(self.grvt_position))
+                        filled_size, filled_price = await self.place_nado_post_only_order(side, abs(self.nado_position))
                     else:
-                        await self.place_grvt_post_only_order(side, self.order_quantity)
+                        filled_size, filled_price = await self.place_nado_post_only_order(side, self.order_quantity)
+                    if filled_size == 0:
+                        self.logger.info(f"[Nado] [{side}] [CANCELLED]")
+                        continue
                 except Exception as e:
-                    self.logger.error(f"⚠️ Error in trading loop: {e}")
+                    self.logger.error(f"⚠️ Error placing nado post only order: {e}")
                     self.logger.error(f"⚠️ Full traceback: {traceback.format_exc()}")
-                    await asyncio.sleep(10)
                     continue
 
-                while not self.order_execution_complete and not self.stop_flag:
-                    # Check if GRVT order filled and we need to place Lighter order
-                    if self.waiting_for_lighter_fill:
-                        await self.place_lighter_market_order(
-                            self.current_lighter_side,
-                            self.current_lighter_quantity,
-                            self.current_lighter_price
-                        )
-                        break
+                self.logger.info(f"[Nado] [{side}] [FILLED]: {filled_size} @ {filled_price}")
+                # Log Nado trade to CSV
+                self.log_trade_to_csv(
+                    exchange='Nado',
+                    side='sell',
+                    price=str(filled_price),
+                    quantity=str(filled_size)
+                )
 
-                    await asyncio.sleep(0.01)
-                    if time.time() - start_time > 180:
-                        self.logger.error("❌ Timeout waiting for trade completion")
-                        break
-                
+                self.nado_position -= abs(filled_size)
+
+                await self.place_lighter_market_order(
+                    'buy',
+                    abs(filled_size)
+                )
+
                 if exit_after_next_trade:
                     self.logger.info("Position back to zero. Done! Exiting...")
                     break
@@ -1105,22 +1012,3 @@ class HedgeBot:
         finally:
             self.logger.info("🔄 Cleaning up...")
             self.shutdown()
-
-
-def parse_arguments():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Trading bot for GRVT and Lighter')
-    parser.add_argument('--exchange', type=str,
-                        help='Exchange')
-    parser.add_argument('--ticker', type=str, default='BTC',
-                        help='Ticker symbol (default: BTC)')
-    parser.add_argument('--size', type=str,
-                        help='Number of tokens to buy/sell per order')
-    parser.add_argument('--iter', type=int,
-                        help='Number of iterations to run')
-    parser.add_argument('--fill-timeout', type=int, default=5,
-                        help='Timeout in seconds for maker order fills (default: 5)')
-    parser.add_argument('--sleep', type=int, default=0,
-                        help='Sleep time in seconds after each step (default: 0)')
-
-    return parser.parse_args()

@@ -42,10 +42,13 @@ class HedgeBot:
         self.fill_timeout = fill_timeout
         self.lighter_order_filled = False
         self.iterations = iterations
+        self.password = password,
         self.sleep_time = sleep_time
         self.current_order = {}
-        self.password = password
-        self.max_position = max_position
+        if max_position == Decimal('0'):
+            self.max_position = order_quantity
+        else:
+            self.max_position = max_position        
 
         # Initialize logging to file
         os.makedirs("logs", exist_ok=True)
@@ -370,9 +373,7 @@ class HedgeBot:
 
                     # Get auth token for the subscription
                     try:
-                        # Set auth token to expire in 10 minutes
-                        ten_minutes_deadline = int(time.time() + 10 * 60)
-                        auth_token, err = self.lighter_client.create_auth_token_with_expiry(ten_minutes_deadline)
+                        auth_token, err = self.lighter_client.create_auth_token_with_expiry(api_key_index=self.api_key_index)
                         if err is not None:
                             self.logger.warning(f"⚠️ Failed to create auth token for account orders subscription: {err}")
                         else:
@@ -527,9 +528,8 @@ class HedgeBot:
 
             self.lighter_client = SignerClient(
                 url=self.lighter_base_url,
-                private_key=api_key_private_key,
                 account_index=self.account_index,
-                api_key_index=self.api_key_index,
+                api_private_keys={self.api_key_index: api_key_private_key}
             )
 
             # Check client
@@ -1129,7 +1129,7 @@ class HedgeBot:
             self.logger.info(f"🔄 Trading loop iteration {iterations}")
             self.logger.info("-----------------------------------------------")
 
-            while self.backpack_position <= self.max_position and not self.stop_flag:
+            while self.backpack_position < self.max_position and not self.stop_flag:
                 self.lighter_position = self.get_lighter_position()
                 self.backpack_position = await self.get_backpack_position()
                 self.logger.info(f"Buying up to {self.max_position} | Backpack position: {self.backpack_position} | Lighter position: {self.lighter_position}")
@@ -1172,7 +1172,7 @@ class HedgeBot:
                 await asyncio.sleep(self.sleep_time)
 
             exit_after_next_trade = False
-            while self.backpack_position >= -1*self.max_position and not self.stop_flag:
+            while self.backpack_position > -1*self.max_position and not self.stop_flag:
                 self.lighter_position = self.get_lighter_position()
                 self.backpack_position = await self.get_backpack_position()
                 self.logger.info(f"Selling up to -{self.max_position} | Backpack position: {self.backpack_position} | Lighter position: {self.lighter_position}")
