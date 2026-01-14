@@ -66,7 +66,7 @@ Examples:
     parser.add_argument('--max-position', type=Decimal, default=Decimal('0'),
                         help='Maximum position to hold (default: 0)')
     parser.add_argument('--v2', action='store_true',
-                        help='Use v2 implementation (currently only supported for grvt exchange)')
+                        help='Use v2 implementation')
     
     return parser.parse_args()
 
@@ -99,7 +99,10 @@ def get_hedge_bot_class(exchange, v2=False):
                 from hedge.hedge_mode_grvt import HedgeBot
             return HedgeBot
         elif exchange.lower() == 'edgex':
-            from hedge.hedge_mode_edgex import HedgeBot
+            if v2:
+                from hedge.hedge_mode_edgex_v2 import HedgeBot
+            else:
+                from hedge.hedge_mode_edgex import HedgeBot
             return HedgeBot
         elif exchange.lower() == 'nado':
             from hedge.hedge_mode_nado import HedgeBot
@@ -128,8 +131,8 @@ async def main():
     validate_exchange(args.exchange)
     
     # Validate v2 flag usage
-    if args.v2 and args.exchange.lower() != 'grvt':
-        print(f"Error: --v2 flag is only supported for grvt exchange")
+    if args.v2 and args.exchange.lower() not in ['grvt','edgex']:
+        print(f"Error: --v2 flag is not supported for {args.exchange.lower()}")
         sys.exit(1)
     
     # Get the appropriate HedgeBot class
@@ -147,6 +150,13 @@ async def main():
     try:
         # v2 bot has different constructor signature (no iterations/sleep_time)
         if args.v2 and args.exchange.lower() == 'grvt':
+            bot = HedgeBotClass(
+                ticker=args.ticker.upper(),
+                order_quantity=Decimal(args.size),
+                fill_timeout=args.fill_timeout,
+                max_position=args.max_position
+            )
+        elif args.v2 and args.exchange.lower() == 'edgex':
             bot = HedgeBotClass(
                 ticker=args.ticker.upper(),
                 order_quantity=Decimal(args.size),
