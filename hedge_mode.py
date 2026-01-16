@@ -160,6 +160,7 @@ async def main():
             bot = HedgeBotClass(
                 ticker=args.ticker.upper(),
                 order_quantity=Decimal(args.size),
+                password=args.password,
                 fill_timeout=args.fill_timeout,
                 max_position=args.max_position
             )

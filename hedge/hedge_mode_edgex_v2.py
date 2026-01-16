@@ -20,26 +20,21 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from exchanges.grvt import GrvtClient
 import websockets
 from datetime import datetime
 import pytz
 from helpers import decrypt_pwd
 import base64
 
-class Config:
-    """Simple config class to wrap dictionary for GRVT client."""
-    def __init__(self, config_dict):
-        for key, value in config_dict.items():
-            setattr(self, key, value)
-
-
 class HedgeBot:
-    """Trading bot that places post-only orders on GRVT and hedges with market orders on Lighter."""
+    """Trading bot that places post-only orders on edgex and hedges with market orders on Lighter."""
 
-    def __init__(self, ticker: str, order_quantity: Decimal, fill_timeout: int = 5, max_position: Decimal = Decimal('0')):
+    SPREAD_COUNT = 10
+
+    def __init__(self, ticker: str, order_quantity: Decimal, password: str, fill_timeout: int = 5, max_position: Decimal = Decimal('0')):
         self.ticker = ticker
         self.order_quantity = order_quantity
+        self.password = password
         self.fill_timeout = fill_timeout
         self.lighter_order_filled = False
         self.current_order = {}
@@ -51,10 +46,10 @@ class HedgeBot:
 
         # Initialize logging to file
         os.makedirs("logs", exist_ok=True)
-        self.log_filename = f"logs/grvt_{ticker}_hedge_mode_log.txt"
-        self.csv_filename = f"logs/grvt_{ticker}_hedge_mode_trades.csv"
-        self.bbo_csv_filename = f"logs/grvt_{ticker}_bbo_data.csv"
-        self.thresholds_json_filename = f"logs/grvt_{ticker}_thresholds.json"
+        self.log_filename = f"logs/edgex_{ticker}_hedge_mode_log.txt"
+        self.csv_filename = f"logs/edgex_{ticker}_hedge_mode_trades.csv"
+        self.bbo_csv_filename = f"logs/edgex_{ticker}_bbo_data.csv"
+        self.thresholds_json_filename = f"logs/edgex_{ticker}_thresholds.jsonl"
         self.original_stdout = sys.stdout
 
         # Initialize CSV file with headers if it doesn't exist
@@ -224,25 +219,13 @@ class HedgeBot:
             except Exception as e:
                 self.logger.error(f"Error cancelling Lighter WebSocket task: {e}")
 
-        # Cancel GRVT order book WebSocket task
-        if self.grvt_order_book_ws_task and not self.grvt_order_book_ws_task.done():
+        # Close WebSocket connections
+        if self.edgex_ws_manager:
             try:
-                self.grvt_order_book_ws_task.cancel()
-                await asyncio.sleep(0.1)  # Give task time to cancel
-                self.logger.info("🔌 GRVT order book WebSocket task cancelled")
+                self.edgex_ws_manager.disconnect_all()
+                self.logger.info("🔌 edgeX WebSocket connections disconnected")
             except Exception as e:
-                self.logger.error(f"Error cancelling GRVT order book WebSocket task: {e}")
-
-        # Disconnect GRVT WebSocket properly
-        if self.grvt_client and hasattr(self.grvt_client, '_ws_client') and self.grvt_client._ws_client:
-            try:
-                # Use asyncio.wait_for with timeout to prevent hanging
-                await asyncio.wait_for(self.grvt_client.disconnect(), timeout=2.0)
-                self.logger.info("🔌 GRVT WebSocket disconnected")
-            except (asyncio.TimeoutError, RuntimeError, Exception) as e:
-                # Ignore errors during shutdown (event loop may be closing or already closed)
-                # RuntimeError: no running event loop can occur during cleanup
-                pass
+                self.logger.error(f"Error disconnecting edgeX WebSocket: {e}")
 
         # Close CSV file handles
         if self.bbo_csv_file:
@@ -280,14 +263,14 @@ class HedgeBot:
         if not file_exists:
             self.bbo_csv_writer.writerow([
                 'timestamp',
-                'grvt_bid',
-                'grvt_ask',
+                'edgex_bid',
+                'edgex_ask',
                 'lighter_bid',
                 'lighter_ask',
-                'long_grvt_spread',
-                'short_grvt_spread',
-                'long_grvt',
-                'short_grvt'
+                'long_edgex_spread',
+                'short_edgex_spread',
+                'long_edgex',
+                'short_edgex'
             ])
             self.bbo_csv_file.flush()  # Ensure header is written immediately
 
@@ -308,7 +291,7 @@ class HedgeBot:
 
         self.logger.info(f"📊 Trade logged to CSV: {exchange} {side} {quantity} @ {price}")
 
-    def log_bbo_to_csv(self, grvt_bid: Decimal, grvt_ask: Decimal, lighter_bid: Decimal, lighter_ask: Decimal, long_grvt: bool, short_grvt: bool):
+    def log_bbo_to_csv(self, edgex_bid: Decimal, edgex_ask: Decimal, lighter_bid: Decimal, lighter_ask: Decimal, long_edgex: bool, short_edgex: bool):
         """Log BBO data to CSV file using buffered writes."""
         if not self.bbo_csv_file or not self.bbo_csv_writer:
             # Fallback: reinitialize if file handle is lost
@@ -317,20 +300,20 @@ class HedgeBot:
         timestamp = datetime.now(pytz.UTC).isoformat()
         
         # Calculate spreads
-        long_grvt_spread = lighter_bid - grvt_bid if lighter_bid and lighter_bid > 0 and grvt_bid > 0 else Decimal('0')
-        short_grvt_spread = grvt_ask - lighter_ask if grvt_ask > 0 and lighter_ask and lighter_ask > 0 else Decimal('0')
+        long_edgex_spread = lighter_bid - edgex_bid if lighter_bid and lighter_bid > 0 and edgex_bid > 0 else Decimal('0')
+        short_edgex_spread = edgex_ask - lighter_ask if edgex_ask > 0 and lighter_ask and lighter_ask > 0 else Decimal('0')
         
         try:
             self.bbo_csv_writer.writerow([
                 timestamp,
-                float(grvt_bid),
-                float(grvt_ask),
+                float(edgex_bid),
+                float(edgex_ask),
                 float(lighter_bid) if lighter_bid and lighter_bid > 0 else 0.0,
                 float(lighter_ask) if lighter_ask and lighter_ask > 0 else 0.0,
-                float(long_grvt_spread),
-                float(short_grvt_spread),
-                long_grvt,
-                short_grvt
+                float(long_edgex_spread),
+                float(short_edgex_spread),
+                long_edgex,
+                short_edgex
             ])
             
             # Increment counter and flush periodically
@@ -348,16 +331,16 @@ class HedgeBot:
                 pass
             self._initialize_bbo_csv_file()
 
-    def log_thresholds_to_json(self, long_grvt_threshold: Decimal, short_grvt_threshold: Decimal):
+    def log_thresholds_to_json(self, long_edgex_threshold: Decimal, short_edgex_threshold: Decimal):
         """Log threshold values to JSON file."""
         try:
             timestamp = datetime.now(pytz.UTC).isoformat()
             thresholds_data = {
                 "timestamp": timestamp,
-                "long_grvt_threshold": float(long_grvt_threshold),
-                "short_grvt_threshold": float(short_grvt_threshold)
+                "long_edgex_threshold": float(long_edgex_threshold),
+                "short_edgex_threshold": float(short_edgex_threshold)
             }
-            with open(self.thresholds_json_filename, 'w') as json_file:
+            with open(self.thresholds_json_filename, 'a') as json_file:
                 json.dump(thresholds_data, json_file, indent=2)
         except Exception as e:
             self.logger.error(f"Error writing thresholds to JSON: {e}")
@@ -769,47 +752,22 @@ class HedgeBot:
 
         return contract_id, tick_size
 
-    def round_to_tick(self, price: Decimal) -> Decimal:
-        """Round price to tick size."""
-        if self.grvt_tick_size is None:
-            return price
-        return (price / self.grvt_tick_size).quantize(Decimal('1')) * self.grvt_tick_size
-
     async def place_edgex_market_order(self, side: str, quantity: Decimal):
-        """Place a market order on GRVT."""
+        """Place a market order on edgex."""
         if not self.edgex_client:
             raise Exception("Edgex client not initialized")
         self.edgex_order_status = None
 
-        return await self.edgex_client.create_market_order(self.edgex_contract_id, quantity, side.lower())
-
-    async def place_grvt_post_only_order(self, side: str, quantity: Decimal):
-        """Place a post-only order on GRVT at best bid/ask."""
-        if not self.grvt_client:
-            raise Exception("GRVT client not initialized")
-
-        # Determine order price
         if side.lower() == 'buy':
-            order_price = self.grvt_best_ask - self.grvt_tick_size
-        else:  # sell
-            order_price = self.grvt_best_bid + self.grvt_tick_size
+            order_side = OrderSide.BUY
+        else:
+            order_side = OrderSide.SELL
 
-        order_price = self.round_to_tick(order_price)
+        self.logger.info(f"DEBUG: id type: {type(self.edgex_contract_id)}, val: {self.edgex_contract_id}")
+        self.logger.info(f"DEBUG: quantity type: {type(quantity)}, val: {quantity}")
+        self.logger.info(f"DEBUG: side type: {type(order_side)}, val: {order_side}")
 
-        self.grvt_order_status = None
-        self.logger.info(f"[OPEN] [GRVT] [{side}] Placing GRVT POST-ONLY order: {quantity} @ {order_price}")
-
-        # Place post-only order using GRVT client
-        order_result = await self.grvt_client.place_open_order(
-            contract_id=self.grvt_contract_id,
-            quantity=quantity,
-            direction=side.lower()
-        )
-
-        if not order_result.success:
-            raise Exception(f"Failed to place order: {order_result.error_message}")
-
-        return order_result.order_id
+        return await self.edgex_client.create_market_order(self.edgex_contract_id, quantity, order_side)
 
     async def place_lighter_market_order(self, lighter_side: str, quantity: Decimal):
         if not self.lighter_client:
@@ -914,58 +872,6 @@ class HedgeBot:
             self.logger.error(f"❌ Full traceback: {traceback.format_exc()}")
 
 
-    def _parse_grvt_level(self, level):
-        """Parse a level which can be dict or list format."""
-        if isinstance(level, dict):
-            return level.get('price', '0'), level.get('size', '0')
-        elif isinstance(level, list) and len(level) >= 2:
-            return str(level[0]), str(level[1])
-        return None, None
-
-    def _update_grvt_orderbook_side(self, orderbook_side, levels):
-        """Update order book side with new levels."""
-        for level in levels:
-            price, size = self._parse_grvt_level(level)
-            if price is None:
-                continue
-            
-            # Convert size to float for comparison
-            try:
-                size_float = float(size)
-            except (ValueError, TypeError):
-                size_float = 0.0
-            
-            # If size is 0 or '0' or '0.0', remove the level
-            if size_float <= 0:
-                orderbook_side.pop(price, None)
-            else:
-                orderbook_side[price] = size
-
-    def _get_grvt_best_levels(self) -> Tuple[Tuple[Decimal, Decimal], Tuple[Decimal, Decimal]]:
-        """Get best bid and ask levels from GRVT order book."""
-        best_bid = None
-        best_ask = None
-
-        if self.grvt_order_book["bids"]:
-            valid_bids = {price: size for price, size in self.grvt_order_book["bids"].items() 
-                         if float(size) > 0}
-            if valid_bids:
-                best_bid_price = max(valid_bids.keys(), key=lambda x: float(x))
-                best_bid = (Decimal(best_bid_price), Decimal(valid_bids[best_bid_price]))
-
-        if self.grvt_order_book["asks"]:
-            valid_asks = {price: size for price, size in self.grvt_order_book["asks"].items() 
-                         if float(size) > 0}
-            if valid_asks:
-                best_ask_price = min(valid_asks.keys(), key=lambda x: float(x))
-                best_ask = (Decimal(best_ask_price), Decimal(valid_asks[best_ask_price]))
-
-        return best_bid, best_ask
-
-    def _get_grvt_instrument_name(self) -> str:
-        """Convert ticker to GRVT instrument format (e.g., BTC -> BTC_USDT_Perp)."""
-        return f"{self.ticker}_USDT_Perp"
-
     async def get_edgex_position(self) -> Decimal:
         """Get account positions using official SDK."""
         position_data_updated = False
@@ -1058,7 +964,7 @@ class HedgeBot:
                 self.logger.info(f"Edgex position: {self.edgex_position} | Lighter position: {self.lighter_position}")
 
             if abs(self.edgex_position + self.lighter_position) > self.order_quantity:
-                self.logger.error(f"❌ Attempt {attempts} | Position imbalance: {self.grvt_position + self.lighter_position}")
+                self.logger.error(f"❌ Attempt {attempts} | Position imbalance: {self.edgex_position + self.lighter_position}")
                 await asyncio.sleep(5)
             else:
                 position_is_balanced = True
@@ -1110,9 +1016,9 @@ class HedgeBot:
                 await asyncio.sleep(0.5)
             
             if self.edgex_order_book_ready:
-                self.logger.info("✅ WebSocket order book data received")
+                self.logger.info("✅ Edgex WebSocket order book data received")
             else:
-                self.logger.warning("⚠️ WebSocket order book not ready, will use REST API fallback")
+                self.logger.warning("⚠️ Edgex WebSocket order book not ready, will use REST API fallback")
             
         except Exception as e:
             self.logger.error(f"❌ Failed to setup edgeX websocket: {e}")
@@ -1164,27 +1070,27 @@ class HedgeBot:
 
             self.spread_history.append(self.lighter_best_bid - self.edgex_best_bid)
 
-            if len(self.spread_history) > 1000:
+            if len(self.spread_history) > HedgeBot.SPREAD_COUNT:
                 data = list(self.spread_history)
                 median_val = statistics.median(data)
-                long_edgex_threshold = median_val + self.edgex_best_ask * Decimal("0.0002")
-                short_edgex_threshold = -median_val + self.edgex_best_ask * Decimal("0.0002")
+                long_edgex_threshold = median_val + self.edgex_best_ask * Decimal("0.00001")
+                short_edgex_threshold = -median_val + self.edgex_best_ask * Decimal("0.00001")
                 # Log thresholds to JSON file
                 self.log_thresholds_to_json(long_edgex_threshold, short_edgex_threshold)
             else:
                 if log_position:
-                    self.logger.info(f"logging spread history. {len(self.spread_history)}/1000")
-                    self.logger.info(f"best bid: {self.lighter_best_bid} | best ask: {self.lighter_best_ask}")
+                    self.logger.info(f"logging spread history. {len(self.spread_history)}/{HedgeBot.SPREAD_COUNT}")
+                    self.logger.info(f"best lighter bid: {self.lighter_best_bid} | best lighter ask: {self.lighter_best_ask}")
                 await asyncio.sleep(1)
                 continue  
 
             long_edgex = False
             short_edgex = False
-            if self.lighter_best_bid and self.edgex_best_ask and self.lighter_best_bid - self.edgex_best_ask > long_edgex_threshold and self.edgex_position <= self.max_position:
+            if self.lighter_best_bid and self.edgex_best_ask and self.lighter_best_bid - self.edgex_best_ask > long_edgex_threshold and self.edgex_position < self.max_position:
                 self.exp_edgex_price = self.edgex_best_ask
                 self.exp_lighter_price = self.lighter_best_bid
                 long_edgex = True
-            elif self.edgex_best_bid and self.lighter_best_ask and self.edgex_best_bid - self.lighter_best_ask > short_edgex_threshold and self.edgex_position >= -1*self.max_position:
+            elif self.edgex_best_bid and self.lighter_best_ask and self.edgex_best_bid - self.lighter_best_ask > short_edgex_threshold and self.edgex_position > -1*self.max_position:
                 self.exp_edgex_price = self.edgex_best_bid
                 self.exp_lighter_price = self.lighter_best_ask
                 short_edgex = True
