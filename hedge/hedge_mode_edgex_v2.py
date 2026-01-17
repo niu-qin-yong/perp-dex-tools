@@ -29,7 +29,7 @@ import base64
 class HedgeBot:
     """Trading bot that places post-only orders on edgex and hedges with market orders on Lighter."""
 
-    SPREAD_COUNT = 10
+    SPREAD_COUNT = 500
 
     def __init__(self, ticker: str, order_quantity: Decimal, password: str, fill_timeout: int = 5, max_position: Decimal = Decimal('0')):
         self.ticker = ticker
@@ -126,6 +126,7 @@ class HedgeBot:
         self.edgex_client = None
         self.edgex_ws_manager = None
         self.edgex_contract_id = None
+        self.edgex_client_order_id = ''
         self.edgex_tick_size = None
         self.edgex_order_status = None
 
@@ -763,11 +764,9 @@ class HedgeBot:
         else:
             order_side = OrderSide.SELL
 
-        self.logger.info(f"DEBUG: id type: {type(self.edgex_contract_id)}, val: {self.edgex_contract_id}")
-        self.logger.info(f"DEBUG: quantity type: {type(quantity)}, val: {quantity}")
-        self.logger.info(f"DEBUG: side type: {type(order_side)}, val: {order_side}")
+        self.edgex_client_order_id = str(int(time.time() * 1000))
 
-        return await self.edgex_client.create_market_order(self.edgex_contract_id, quantity, order_side)
+        return await self.edgex_client.create_market_order(self.edgex_contract_id, str(quantity), order_side, self.edgex_client_order_id)
 
     async def place_lighter_market_order(self, lighter_side: str, quantity: Decimal):
         if not self.lighter_client:
@@ -1073,8 +1072,8 @@ class HedgeBot:
             if len(self.spread_history) > HedgeBot.SPREAD_COUNT:
                 data = list(self.spread_history)
                 median_val = statistics.median(data)
-                long_edgex_threshold = median_val + self.edgex_best_ask * Decimal("0.00001")
-                short_edgex_threshold = -median_val + self.edgex_best_ask * Decimal("0.00001")
+                long_edgex_threshold = median_val + self.edgex_best_ask * Decimal("0.0004")
+                short_edgex_threshold = -median_val + self.edgex_best_ask * Decimal("0.0004")
                 # Log thresholds to JSON file
                 self.log_thresholds_to_json(long_edgex_threshold, short_edgex_threshold)
             else:
@@ -1097,6 +1096,8 @@ class HedgeBot:
 
             if long_edgex:
                 order_quantity = min(self.order_quantity, self.edgex_best_ask_size)
+                # edgex eth minOrderSize 0.02
+                order_quantity = max(0.02, order_quantity)
 
                 try:
                     # Place both trades concurrently
@@ -1110,6 +1111,8 @@ class HedgeBot:
 
             elif short_edgex:
                 order_quantity = min(self.order_quantity, self.edgex_best_bid_size)
+                # edgex eth minOrderSize 0.02
+                order_quantity = max(0.02, order_quantity)
 
                 try:
                     # Place both trades concurrently
@@ -1178,7 +1181,8 @@ class HedgeBot:
                                     exchange='edgeX',
                                     side=side,
                                     price=str(order.get('price', '0')),
-                                    quantity=str(filled_size)
+                                    quantity=str(filled_size),
+                                    expected_price=str(self.exp_edgex_price)
                                 )
                                 
                                 # Call handle_edgex_order_update directly to avoid delay
