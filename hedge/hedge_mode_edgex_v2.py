@@ -29,7 +29,7 @@ import base64
 class HedgeBot:
     """Trading bot that places post-only orders on edgex and hedges with market orders on Lighter."""
 
-    SPREAD_COUNT = 500
+    SPREAD_COUNT = 100
 
     def __init__(self, ticker: str, order_quantity: Decimal, password: str, fill_timeout: int = 5, max_position: Decimal = Decimal('0')):
         self.ticker = ticker
@@ -39,7 +39,7 @@ class HedgeBot:
         self.lighter_order_filled = False
         self.current_order = {}
         self.max_position = max_position
-        self.spread_history = deque(maxlen=2000)
+        self.spread_history = deque(maxlen=1000)
 
         self.exp_edgex_price = 0
         self.exp_lighter_price = 0
@@ -332,14 +332,16 @@ class HedgeBot:
                 pass
             self._initialize_bbo_csv_file()
 
-    def log_thresholds_to_json(self, long_edgex_threshold: Decimal, short_edgex_threshold: Decimal):
+    def log_thresholds_to_json(self, long_edgex_threshold: Decimal, long_spread: Decimal, short_edgex_threshold: Decimal, short_spread: Decimal):
         """Log threshold values to JSON file."""
         try:
             timestamp = datetime.now(pytz.UTC).isoformat()
             thresholds_data = {
                 "timestamp": timestamp,
                 "long_edgex_threshold": float(long_edgex_threshold),
-                "short_edgex_threshold": float(short_edgex_threshold)
+                "long_spread": float(long_spread),
+                "short_edgex_threshold": float(short_edgex_threshold),
+                "short_spread": float(short_spread)
             }
             with open(self.thresholds_json_filename, 'a') as json_file:
                 json.dump(thresholds_data, json_file, indent=2)
@@ -1074,8 +1076,10 @@ class HedgeBot:
                 median_val = statistics.median(data)
                 long_edgex_threshold = median_val + self.edgex_best_ask * Decimal("0.0004")
                 short_edgex_threshold = -median_val + self.edgex_best_ask * Decimal("0.0004")
+                long_spread = self.lighter_best_bid - self.edgex_best_ask
+                short_spread = self.edgex_best_bid - self.lighter_best_ask
                 # Log thresholds to JSON file
-                self.log_thresholds_to_json(long_edgex_threshold, short_edgex_threshold)
+                self.log_thresholds_to_json(long_edgex_threshold, long_spread, short_edgex_threshold, short_spread)
             else:
                 if log_position:
                     self.logger.info(f"logging spread history. {len(self.spread_history)}/{HedgeBot.SPREAD_COUNT}")
